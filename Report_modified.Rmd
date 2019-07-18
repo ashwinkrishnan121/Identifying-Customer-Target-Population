@@ -1,0 +1,553 @@
+---
+title: "Comcast- Data Challenge"
+author:
+- name: Gopalakrishnan Kalarikovilagam Subramanian
+date: "July 16, 2019"
+output: 
+  prettydoc::html_pretty:
+    theme: architect
+---
+
+## INTRODUCTION
+
+The dataset contains records of customer that were serviced by the CoE in the 
+last 9 months, and the analyst created a binary indicator (1 = YES, 0 = NO) of 
+which customers were cross-sold as the target variable.
+
+The goal of this project is to build a model for detecting the dependencies of 
+the output variable on a subset of the given input parameters. The data is a 
+mixture of categorical and continuous variables.The data also contains many 
+missing values. The data needs to be cleaned first. The dimentionality of 
+the data set needs to be reduced to improve the ease of modelling, reduce
+the time of modelling and improve our understanding of the model.
+ 
+The data set presents the transaction over 9 months and it has 300,000 observations.
+The output variable is "target" which is the response variable and can take value
+of 1 in case of success of cross-selling and 0 otherwise.  The data set is 
+highly unbalanced and therefore over-sampling technique has been used for improving
+the balance of the data set.
+
+The output variable is binary and hence is a classification problem. Therefore the 
+following methods can be used:
+1.	Logistic regression
+2.	Decision trees
+3.	Random Forest
+
+## Packages Required
+
+The following packages are being used for our analysis:
+
+```{r message = FALSE}
+#pretty doc to have a nice html output for the rmd
+library(prettydoc)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(ranger)
+library(pROC)
+library(pdp)
+library(ggplot2)
+library(gbm)
+library(xgboost)
+library(adabag)
+library(ROCR)
+library(lattice)
+library(randomForest)
+```
+
+## Data Collection
+
+The data is imported into R work space. The delimitation used is '|'. The data
+consists of 300000 observations and 128 variables. The data is a mixture of 
+categorical and continuous variables. The output variable is 'target' and is a 
+binary variable which takes values '1' and '0'. 
+```{r message = FALSE, results='hide', include=FALSE}
+#import data
+
+Customer_data <- read.csv(file="DS_Tech_Review_Dataset (1).txt", sep="|")
+summary(Customer_data)
+```
+
+## Data Preparation
+
+The data set contains lots of NA value. To do feature engineering we need to have
+a clean data set without NA values. As a first step the variables having more than
+5% NA values are removed. This resulted in the removal of 40 variables. The
+new data set contains 300000 observations and 88 variables. The rows are then 
+scanned for NA values. Any row which contains a NA value is removed. This resulted
+in a new data set with 280427 rows. 
+
+```{r eval=F, echo=T}
+## Remove columns with more than 5% NA
+Customer_data_mod <-  Customer_data[, -which(colMeans(is.na(Customer_data)) > 0.05)]
+
+##Remove rows with NA values
+Customer_data_mod2 <- Customer_data_mod[-which(rowMeans(is.na(Customer_data_mod)) > 0), ]
+
+
+```
+
+It was observed that two  columns - 'MAJOR_CREDIT_CARD_LIF' and 'product'
+were character categorical variables and they were converted to ordinal
+categorical variables as shown below: The product variable is split into 6 different
+parts:
+'0' when the product subscribed is 'VIDEO/DATA/VOICE'.
+'1' when the product subscribed is 'VIDEO/DATA'.
+'2' when the product subscribed is 'DATA ONLY'.
+'3' when the product subscribed is 'VIDEO ONLY'.
+'4' when the product subscribed is 'DATA/VOICE'.
+'5' when the product subscribed is 'VIDEO/DATA/VOICE/HOME'
+'6' when the product subscribed is 'Others'
+
+```{r eval=F, echo=T}
+
+#Variable correction
+
+Customer_data_mod2$MAJOR_CREDIT_CARD_LIF <- ifelse(Customer_data_mod2$MAJOR_CREDIT_CARD_LIF == 'U', 1,0)
+
+Customer_data_mod2$product <- ifelse(Customer_data_mod2$product == 'VIDEO/DATA/VOICE', 0,
+                                         ifelse(Customer_data_mod2$product == 'VIDEO/DATA', 1,
+                                                ifelse(Customer_data_mod2$product == 'DATA ONLY',2,
+                                                       ifelse(Customer_data_mod2$product == 'VIDEO ONLY', 3,
+                                                              ifelse(Customer_data_mod2$product == 'DATA/VOICE',4,
+                                                                     ifelse(Customer_data_mod2$product == 'VIDEO/DATA/VOICE/HOME',5,6
+                                                                            ))))))
+
+```
+
+### Feature Engineering
+Feature Engineering is performed on the cleaned data set. The variables with zero
+variance are removed from the data set. This resulted in the removal of three
+variables. The data set is then split into two difference data frames - one with
+all the categorical variables and the other with all the continuous variables.
+
+The continuous variables data set is then checked for near zero variance predictors.
+The split is done because the categorical variables are generally near zero
+predictors and would have been removed had this been done on the whole data frame.
+This necessitated the split into continuous and categorical data frames. The near
+zero variance test resulted in the removal of 29 variables.
+
+```{r eval=F, echo=T}
+# Remove features with zero variance
+
+Customer_data_mod2 <- Customer_data_mod2[ - as.numeric(which(apply(Customer_data_mod2, 2, var) == 0))]
+
+#Seperate Categorical and Continuous variables
+
+discreteL <- function(x) length(unique(x)) < 10
+
+Customer_data_cont <- Customer_data_mod2[ , !sapply(Customer_data_mod2, discreteL)] 
+Customer_data_categorical <- Customer_data_mod2[ , sapply(Customer_data_mod2, discreteL)] 
+
+
+# Identify near zero variance predictors on the continuous data set
+
+remove_cols <- nearZeroVar(Customer_data_cont, names = TRUE, 
+                           freqCut = 2, uniqueCut = 20)
+
+# Get all column names from Customer_data_cont: all_cols
+
+all_cols <- names(Customer_data_cont)
+
+# Remove from data: Customer_data_cont2
+
+Customer_data_cont2 <- Customer_data_cont[ , setdiff(all_cols, remove_cols)]
+```
+
+Pricipal component analysis is then performed on the reduced continuous dataframe.
+This is important because the regular principal component analysis can be carried
+on a continuous variable and this necessitated the orginal split into continuous
+and categorical data frames. The Principa component analysis resulted in the 
+reduction of the 19 variables to 7 main principal components. These principal
+components explained 85% of the variance of the 19 variables. The individual 
+eigen values of these 7 components are near the unity range and hence explain
+as much of the variance of a single normalized variable would. After the seventh
+principal compenent the eigen values are much lesser than 1 and it is neglected.
+The data frame containg these seven principal components are column binded with 
+the categorical data frame created before and this is the reduced data frame which
+is going to be used for the data analysis.
+
+The variables having maximum loading for Principal component 1 (PC1) are:
+AGE65_69(0.36), AGE60_64 (0.35), AGE70_74(0.34), AGE75_79(0.39), AGE30_34(-0.28).
+It mainly signifies people in the older age group.
+
+The variables having maximum loading for Principal component 2 (PC2) are:
+AGE45_49(0.43), AGE50_54 (0.38), AGE40_44(0.31), AGE25_29(-0.32). This mainly
+signifies the middle age group.
+
+The variables having maximum loading for Principal component 3 (PC3) are:
+AGE15_19(0.43), AGE21UP(-0.37), AGE35_39(-0.36), AGE40_44(-0.33), AGE30_34(-0.30).
+These might be the teanage boys who do not have brothers.
+
+The variables having maximum loading for Principal component 4 (PC4) are:
+data_penetration_pct(0.61), video_penetration_pct(0.58). This principal component
+deals with the data penetration.
+
+The variables having maximum loading for Principal component 5 (PC5) are:
+AGE20_24(-0.50), AGE18UP(0.40), AGE0_4(0.37). This principal component
+deals with the families with two kids. One who is toddler and the other at end 
+of teenage.
+
+The variables having maximum loading for Principal component 6 (PC6) are:
+bllng_amt(-0.99). This principal component gives a negative weightage to the
+billing amount.
+
+The variables having maximum loading for Principal component 7 (PC7) are:
+AGE18UP(0.82), AGE0_4(-0.35), AGE20_24(0.29). This principal component deals with
+families with children in the age group 18-24, but do not have a toddler.
+
+```{r message=FALSE, eval=F, echo=T}
+#principal components analysis on the continuous variables
+
+pZ <- prcomp(Customer_data_cont2, tol = 0.1, scale = TRUE)
+
+PC_data_frame <- (cbind(pZ$x[,1], pZ$x[,2], pZ$x[,3], pZ$x[,4], pZ$x[,5], pZ$x[,6],
+                        pZ$x[,7]))
+
+colnames(PC_data_frame) <- c("PC1","PC2","PC3","PC4","PC5","PC6","PC7")
+
+#Combining the categorical data frome and the PC data frame
+
+Customer_data_corrected <- cbind(Customer_data_categorical,PC_data_frame)
+
+```
+
+## Exploratory Data Analysis
+
+A plot of product and target is made. It is seen that when the product is 'VIDEO/DATA',
+there is a high positive target value. A relatively high proportion of target variable
+is positive when the product is 'DATA ONLY. Very few target value is positive when
+the product is 'VIDEO/DATA/VOICE'. 
+
+A plot of previous number of products and the target variable is made. It is noticed
+that when the previous number of products is 1 or 2, there is a high chance of the
+target being successful. When it is three the chance of the customer buying the 
+fourth product is miniscule.
+
+A plot of the target variable and the customer previously having a voice product 
+is made. It is seen that if the customer has a voice product before, he is not
+inclined to buying anything more.
+
+When a customer is having previously a data product, he still goes for buying a 
+new product. If the customer does not own a video product, he can be interested 
+in buying a new product.
+
+A plot of present product owned and previous voice product owner is made.It is noticed that
+some people with no voice connection before have taken it now as a 'VIDEO/DATA/VOICE'
+package. Very few peoplr have taken the  'DATA/VOICE' and 'VIDEO/DATA/VOICE/HOME'
+package. Most of the voice owners are in the 'VIDEO/DATA/VOICE' package.
+
+A plot of present product owned and previous voice data owner is made. Most of 
+the previous data owner are in the 'VIDEO/DATA/VOICE' package, followed by
+'VIDEO/DATA' package and then 'DATA ONLY' package. A few people have joined these
+packages now.
+
+A plot of present product owned and previous video data owner is made. Most of 
+the previous video owner are in the 'VIDEO/DATA/VOICE' package, followed by
+'VIDEO/DATA' package and then 'VIDEO ONLY'' package. A few people have joined these
+packages now.
+
+A plot of count of prodcts used by customers is plotted. A large part of the 
+customers are in the 'VIDEO/DATA/VOICE' package, followed by 'VIDEO/DATA', 
+'DATA ONLY' and 'VIDEO ONLY'.
+
+```{r pressure, echo=FALSE, fig.cap="Variation of target across products", out.width = '100%'}
+knitr::include_graphics("Plot1.PNG")
+```
+```{r pressure2, echo=FALSE, fig.cap="Variation of target across previous number of products", out.width = '100%'}
+knitr::include_graphics("Plot2.PNG")
+```
+```{r pressure3, echo=FALSE, fig.cap="Variation of target across previous registered voice user", out.width = '100%'}
+knitr::include_graphics("Plot3.PNG")
+```
+```{r pressure4, echo=FALSE, fig.cap="Variation of target across previous registered data user", out.width = '100%'}
+knitr::include_graphics("Plot4.PNG")
+```
+```{r pressure5, echo=FALSE, fig.cap="Variation of target across previous registered video user", out.width = '100%'}
+knitr::include_graphics("Plot5.PNG")
+```
+```{r pressure6, echo=FALSE, fig.cap="Variation of previous registered voice user across products", out.width = '100%'}
+knitr::include_graphics("Plot6.PNG")
+```
+```{r pressure7, echo=FALSE, fig.cap="Variation of previous registered video user across products", out.width = '100%'}
+knitr::include_graphics("Plot7.PNG")
+```
+```{r pressure8, echo=FALSE, fig.cap="Number of different product users", out.width = '100%'}
+knitr::include_graphics("Plot8.PNG")
+```
+
+## Over-Sampling
+
+The dataframe is imbalanced. the number of 1's and 0's in the target variable is
+skewed. To Overcome this problem, 'Over Sampling' is done on the data set. In the 
+Over-Sampling algorithm the data is separated on the basis of the target variable
+into two data sets. The data set containing the target variable in minority (i.e.
+                                                                             in this case the data set containing the rows where target variable is 1) is added
+multiple times to the other data set. Multiple copies on the smaller data set
+is added to the bigger data set. This results in a new data set where is a balance
+in the observations with target variable as '0' and '1'.
+
+```{r echo=T, message=FALSE, eval=FALSE}
+#Oversampling the data
+
+campaign_failure = Customer_data_corrected[Customer_data_corrected$target==0,]
+campaign_sucess = Customer_data_corrected[Customer_data_corrected$target==1,]
+
+new_data <- campaign_failure
+for (i in 1:41)
+{
+  new_data <- rbind(new_data,campaign_sucess, deparse.level = 0, make.row.names = TRUE,
+                    stringsAsFactors = default.stringsAsFactors())
+}
+table(new_data$target)
+```
+
+The original data set is then split into training and testing samples in the 
+ratio of 0.6:0.4. The oversampled data set is also split into training and 
+testing samples in the same ratio.
+
+```{r echo=T, message=FALSE, eval=FALSE}
+# Partition the original_data into train/test sets
+set.seed(1535)
+index <- sample(nrow(Customer_data_corrected),nrow(Customer_data_corrected)*0.70)
+train = Customer_data_corrected[index,]
+test = Customer_data_corrected[-index,]
+
+# Partition the Oversampled data set into train/test sets
+set.seed(1535)
+index <- sample(nrow(new_data),nrow(new_data)*0.60)
+train_oversampled = new_data[index,]
+test_oversampled = new_data[-index,]
+
+```
+
+## Data Modelling
+The machine learning algorithms of decision trees, Randon-Forest and Gradient-Boosting
+machines are used for modelling the data. 
+
+###Decision Tree
+The rpart library is used for building the decision trees. The train_oversampled
+data is used for modelling the tree. The target is the response variable and all 
+the other variables are used as predictors. The cp value has been kept low for
+tuning purposes at 0.0001. A cp plot is carried out to find the optimal value.
+The optimal value is found to be 0.00012. This value is then used to build the 
+modified tree.
+
+```{r echo=T, message=FALSE, eval=FALSE}
+#Make the best tree model
+
+target_rpart <- rpart(
+  target ~ ., data = train_oversampled, 
+  control = list(cp = 0.00012), method = "class"
+)
+
+```
+
+The built model is used for predicted on the training data. The AUC value of the 
+ROC curve is found to be 0.87. The ROC curve, gain chart are plotted below.                     The gain chart has a smooth increase at the beginning and eventually settles down.
+The lift value is 150%, as for the first 10% of population there are 15% positive
+responders. The positive responders are similar to the rise in population till
+the 6th decile after which it is dominated by non-positive responders.
+The KS plot which shows the ability of the model to differentiate between positive 
+and negative values is also given below. The KS value is 0.53, which is pretty good.
+
+A similar prediction is carried out on the test data. The AUC value is 0.87 and the
+KS value is 0.66, which are very good. The gain chart shows a much smaller population
+range over which there are more positive responders. But the lift is almost 283.3%
+in this range which is excellent.
+
+```{r, message=FALSE, echo=T, eval=FALSE}                                                                                               
+#ROC Curve ,Gain Chart and K-S Chart for test data 
+
+target.test.random = predict(target_rpart,test, type="prob")
+pred = prediction(target.test.random[,2], test$target)
+perf = performance(pred, "tpr", "fpr")
+plot(perf, colorize=TRUE)
+
+slot(performance(pred, "auc"), "y.values")[[1]]  
+
+gain <- performance(pred, "tpr", "rpp")
+plot(gain, main = "Gain Chart")
+
+ks=max(attr(perf,'y.values')[[1]]-attr(perf,'x.values')[[1]])
+plot(perf,main=paste0(' KS=',round(ks*100,1),'%'))
+lines(x = c(0,1),y=c(0,1))
+print(ks); 
+
+#Variable importance
+
+target_rpart$variable.importance
+```
+
+```{r pressure9, echo=FALSE, fig.cap="ROC curve for test data", out.width = '100%'}
+knitr::include_graphics("ROC1.PNG")
+```
+```{r pressure10, echo=FALSE, fig.cap="GAIN chart for test data", out.width = '100%'}
+knitr::include_graphics("GAIN1.PNG")
+```
+```{r pressure11, echo=FALSE, fig.cap="KS plot for test data", out.width = '100%'}
+knitr::include_graphics("KS1.PNG")
+```
+
+The important variables used to build the tree are then studied. The top variables
+are product, prev_number_of_products, PC6, prev_rgu_voice, PC4, PC1, PC2, PC5, PC7,
+PC3, tellop_id. 
+
+It is seen that when the product is 'VIDEO/DATA',there is a high positive target 
+value. A relatively high proportion of target variable is positive when the 
+product is 'DATA ONLY. Very few target value is positive when the product is 
+'VIDEO/DATA/VOICE'. 
+
+When the previous number products is 1 or 2 there is high chance of the target
+campaign being sucessful and when it is 3 the chances are miniscule.
+
+The billing amount is an important predictor here for the targeting campaign. Next 
+is the variable showing if the customer was previously using voice product. The 
+next important variable is the data penetration(PC4). The next important variables 
+are older age group(PC1) and middle aged group(PC2).
+
+
+###Random Forest
+
+Random Forest algorithm is then used to model the data. The most important hyper
+parameters are the number of trees and the mtry values. The number of trees
+is chosen as 800 and the mtry value is chosen as 8. The randomForest library is
+used for building the model.
+
+```{r, message=FALSE, echo=T, eval=FALSE}
+#Random Forest Model with 500 trees
+
+target.rf <- randomForest(
+target ~ ., 
+data = train_oversampled, 
+ntree = 500,
+mtry = 8,
+importance = FALSE
+)
+
+```
+
+An ROC curve is plotted using the model for both training and testing data. The
+test data is secured before the over-sampling is carried out on the data. Therefore,
+there are no duplicates in the test data.
+
+The model performs very well on the training data. The AUC is 0.99, which is the 
+best possible ourput one can get. The KS value is 0.98, which again is very good.
+
+A similar test is carried on the test data and the results are the same as the 
+one with the training data. The gain chart a sharp slope, which means we can predict
+the exact percentage of the population who are going to give a positive response.
+
+```{r, message=FALSE, echo=T, eval=FALSE}                                                                                               
+#ROC Curve ,Gain Chart and K-S Chart for test data 
+
+target.test.random = predict(target.rf,test, type="prob")
+pred = prediction(target.test.random[,2], test$target)
+perf = performance(pred, "tpr", "fpr")
+plot(perf, colorize=TRUE)
+
+slot(performance(pred, "auc"), "y.values")[[1]]  
+
+gain <- performance(pred, "tpr", "rpp")
+plot(gain, main = "Gain Chart")
+
+ks=max(attr(perf,'y.values')[[1]]-attr(perf,'x.values')[[1]])
+plot(perf,main=paste0(' KS=',round(ks*100,1),'%'))
+lines(x = c(0,1),y=c(0,1))
+print(ks);   
+
+# Variable importance plot
+
+vip::vip(target.rf, num_features = 15)
+```
+
+```{r pressure12, echo=FALSE, fig.cap="ROC curve for test data", out.width = '100%'}
+knitr::include_graphics("ROC2.PNG")
+```
+```{r pressure13, echo=FALSE, fig.cap="GAIN chart for test data", out.width = '100%'}
+knitr::include_graphics("GAIN2.PNG")
+```
+```{r pressure14, echo=FALSE, fig.cap="KS plot for test data", out.width = '100%'}
+knitr::include_graphics("KS2.PNG")
+```
+```{r pressure15, echo=FALSE, fig.cap="Variable Importance Prediction", out.width = '100%'}
+knitr::include_graphics("VIP1.PNG")
+```
+
+A Variable inportance Prediction(VIP) test is carried on the model. The important
+parameters in the order of importance are PC6(negative weightage to the billing amount), 
+PC3(end of teenage kids), product , PC2 (middle aged people),
+PC4(data penetration), PC1(old aged people), PC7(Children in aged group 18-24), 
+PC5(end of teenage and toddler), previous number of products( 1 and 2 product customers).
+
+From the variable imporatance plot it is clear that children in the aged group
+18-24, middle aged and old aged people generally give positive response to 
+campaign. Targeting people who have 1 or 2 products and living in area with 
+high data penetration will result in better conversion ratio for the campaign.
+
+The most imporatant feature is the billing amount of the customer. A Customer 
+with low billing amount will be a better target than a customer with a high
+billing amount.
+
+A customer using the product 'VIDEO/DATA' and 'DATA ONLY' is a more likely target.
+A customer using the product 'VIDEO/DATA/VOICE' is a highly unlikely target.
+
+
+###LOGISTIC REGRESSION
+
+Logistic algorithm is then used to model the data. The imporatant variables from
+Random Forest Model is used to make the logistic regression. The important 
+variables choosen are : PC6, PC3, product, PC2, PC4, PC1, PC7, PC5 and
+prev_number_of_products. 
+
+```{r, message=FALSE, echo=T, eval=FALSE}
+# Logistic Regression model with most important variables from Random Forest Model
+
+Customer.glm0<- glm(target~PC6+PC3+product+PC2+PC4+PC1+PC7+PC5+prev_number_of_products, family=binomial, data=train_oversampled)
+summary(Customer.glm0)
+```
+
+From the summary it is seen that target is negatively related to PC6, PC1 and PC7 
+and positively related to PC3, product, PC2, PC4, PC5.
+
+## Summary
+
+*  The intial data contained 300,000 observations and 128 variables. 
+*  The columns containing more than 5% NA values are removed. 
+*  The rows containing NA values are removed.
+*  The zero variance variables are removed. 
+*  The data-frame is then split into categorical and continuous variable dataframes. 
+*  The continuous variable dataframe is cleaned of near-zero variance variables. 
+*  Principal Component Analysis is performed on the cleaned continuous variable data-frame. 
+*  The resulting seven PC variables are column binded with the categorical variables data-frame.
+*  Data-Frame split into training and testing data.
+*  Over-Sampling performed to valance the target outputs.
+*  Over-sampled data-frame split into training and test samples.
+*  Decision-Tree, Random-Forest and Logistic-Regression algorithms are used to 
+model the training data.
+*  AUC values are used for comparing the models.
+*  Gain-Plots are created for the model to check the efficacy of the model to
+identify the target population.
+*  KS Chart are used for checking the capability of the model to split the positive
+and negative target outputs.
+
+## Conclusion
+*  The most imporatant feature is the billing amount of the customer. A Customer 
+with high billing amount is a better target than a customer with a high billing amount.
+*  Children in the aged group 18-24 give high ratio of poitive-response compared
+to other age-group.
+*  Old people and middle aged people are the next likely positive-response group.
+*  People who already have 1 or 2 products are more likely to purchase another 
+product.
+*  People who have three products already are very unlikely to react positively    
+to the campaign.
+*  Places that have high data and video penetration will have a more positive
+response to the campaign compared to others.
+*  Customer using the product 'VIDEO/DATA' and 'DATA ONLY' is a more likely target.
+*  Customer using the product 'VIDEO/DATA/VOICE' is a highly unlikely target.
+
+
+
+
+
